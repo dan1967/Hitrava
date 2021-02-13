@@ -54,11 +54,10 @@ PROGRAM_MINOR_VERSION = '2'
 PROGRAM_PATCH_VERSION = '0'
 PROGRAM_MAJOR_BUILD = '2101'
 PROGRAM_MINOR_BUILD = '1801'
-PROGRAM_DAN67_BUILD = '20210211_work'
+PROGRAM_DAN67_BUILD = '20210213_work'
 
 OUTPUT_DIR = './output'
 GPS_TIMEOUT = dts_delta(seconds=10)
-
 
 class HiActivity:
     """" This class represents all the data contained in a HiTrack file."""
@@ -121,6 +120,25 @@ class HiActivity:
 
         # Private variable to temporarily hold the last parsed SWOLF data during parsing of swimming activities
         self.last_swolf_data = None
+
+        # Private variable for JSON data
+        # for xml / tcx
+
+        # Set tcx lap data
+        self.JSON_startTime = 0
+        self.JSON_totalTime = 0  # total time in seconds
+        self.JSON_totalDistance = 0
+        self.JSON_bestPace = 0
+        self.JSON_totalCalories = 0
+        self.JSON_avgHeartRate = 0
+        self.JSON_maxHeartRate = 0
+
+        # Set tcx ext. lap data
+        self.JSON_avgPace = 0
+        self.JSON_avgCadence = 0
+        self.JSON_bestCadence = 0
+        self.JSON_totalSteps = 0
+
 
     @classmethod
     def from_json_pool_swim_data(cls, activity_id: str, start: datetime, json_pool_swim_dict):
@@ -684,9 +702,10 @@ class HiActivity:
                     if data['lat'] == 90 and data['lon'] == -80:
                         # Pause or stop records (lat = 90, long = -80, alt = 0) and handle segment data creation
                         # Use timestamp and distance of last (location) record
-                        logging.getLogger(PROGRAM_NAME).debug('Start pause at %s in %s', data['t'], self.activity_id)
-                        paused = True
-                        self._add_segment_stop(last_location['t'], last_location['distance'] - segment_start_distance)
+                        if not args.no_pause :
+                            logging.getLogger(PROGRAM_NAME).debug('Start pause at %s in %s', data['t'], self.activity_id)
+                            paused = True
+                            self._add_segment_stop(last_location['t'], last_location['distance'] - segment_start_distance)
                     elif 'lat' not in last_location:
                         # GPS was lost and is now back. Set distance to last known distance and use this record as the
                         # last known location.
@@ -1301,7 +1320,7 @@ class HiJson:
 
         if self.export_json_summary:
             # Save aditional JSON data as summary of single activity.
-            json_summary_filename = hitrack_filename + '_summary.txt'
+            json_summary_filename = hitrack_filename + '_summary_' + str(activity_dict["sportType"]) + '.txt'
             try:
                 json_summary = open(json_summary_filename, 'w+')
                 json_summary_data = self._generate_json_summary(activity_start,time_zone,activity_dict,activity_detail_dict)
@@ -1363,6 +1382,14 @@ class HiJson:
             # For all activities except pool swimming, parse the HiTrack file
             hitrack_file = HiTrackFile(hitrack_filename)
             hi_activity = hitrack_file.parse()
+
+            # write global info about training, for xml
+            hi_activity.JSON_totalDistance = activity_dict["totalDistance"]
+            hi_activity.JSON_totalTime = activity_dict["totalTime"]/1000
+
+            if args.use_JSON_data:
+                self._generate_json_tcx_data(activity_dict, activity_detail_dict,hi_activity)
+
             if sport != HiActivity.TYPE_UNKNOWN:
                 hi_activity.set_activity_type(sport)
             else:
@@ -1416,11 +1443,18 @@ class HiJson:
 
         self.json_summary_list.append("Date      : " + _get_tz_aware_datetime(activity_start, time_zone).strftime('%Y%m%d_%H%M%S'))
         self.json_summary_list.append("Activity  : " + str(activity_dict["sportType"]))
-        # TODO add line with text sport type (I can not do it :-( )
+
+        # I not understand this code, only copy from _parse_activity
+        # convert sportType to text
+        if any(activity_dict['sportType'] in i for i in self._JSON_SPORT_TYPES):
+            sport = \
+                [item[1] for item in self._JSON_SPORT_TYPES if
+                 item[0] == activity_dict['sportType']][0]
+        self.json_summary_list.append("Activity  : " + sport)
 
         self.json_summary_list.append("Duration  : " + str(datetime.timedelta(seconds=activity_dict["totalTime"]/1000)))
         self.json_summary_list.append("Distance  : " + str(activity_dict["totalDistance"]))
-        self.json_summary_list.append("Calories  : " + str(activity_dict["totalCalories"]))
+        self.json_summary_list.append("Calories  : " + str(activity_dict["totalCalories"]/1000))
         self.json_summary_list.append("HR avg    : " + str(activity_detail_dict["avgHeartRate"]))
         self.json_summary_list.append("HR max    : " + str(activity_detail_dict["maxHeartRate"]))
         self.json_summary_list.append("Pace avg  : " + str(datetime.timedelta(seconds=activity_detail_dict["avgPace"])))
@@ -1443,6 +1477,20 @@ class HiJson:
 
         return self.json_summary_list
 
+    def _generate_json_tcx_data(self,activity_dict : dict, activity_detail_dict : dict, hi_activity : HiActivity):
+        hi_activity.JSON_totalTime = int(activity_dict["totalTime"] / 1000)
+        hi_activity.JSON_totalDistance = activity_dict["totalDistance"]
+        hi_activity.JSON_bestPace = activity_detail_dict["bestPace"]
+        hi_activity.JSON_totalCalories = int(activity_dict["totalCalories"] / 1000)
+        hi_activity.JSON_avgHeartRate = activity_detail_dict["avgHeartRate"]
+        hi_activity.JSON_maxHeartRate = activity_detail_dict["maxHeartRate"]
+
+
+        # Set tcx ext. lap data
+        hi_activity.JSON_avgPace = activity_detail_dict["avgPace"]
+        hi_activity.JSON_avgCadence = activity_detail_dict["avgStepRate"]
+        hi_activity.JSON_bestCadence = activity_detail_dict["bestStepRate"]
+        hi_activity.JSON_totalSteps = activity_dict["totalSteps"]
 
 class TcxActivity:
     # Strava accepts following sports: walking, running, biking, swimming.
@@ -1544,6 +1592,7 @@ class TcxActivity:
             # TODO verify if this is the case for Strava too or if something more meaningful can be passed.
             el_id = xml_et.SubElement(el_activity, 'Id')
             el_id.text = _get_tz_aware_datetime(self.hi_activity.start, self.hi_activity.time_zone).isoformat('T')
+
             # Generate the activity xml content based on the type of activity
             if self.hi_activity.get_activity_type() in [HiActivity.TYPE_WALK,
                                                         HiActivity.TYPE_RUN,
@@ -1567,6 +1616,19 @@ class TcxActivity:
                                                         self.hi_activity.activity_id,
                                                         self.hi_activity.get_activity_type())
                 self._generate_walk_run_cycle_xml_data(el_activity)
+
+
+            # *** Training
+            # *** genetare summary about training
+
+            el_training = xml_et.SubElement(el_activity, 'Training')
+            el_training.set('VirtualPartner', 'false')
+
+            el_QuickWorkoutResults = xml_et.SubElement(el_training, 'QuickWorkoutResults')
+            el_time = xml_et.SubElement(el_QuickWorkoutResults, 'TotalTimeSeconds')
+            el_time.text = str(self.hi_activity.JSON_totalTime)
+            el_distance = xml_et.SubElement(el_QuickWorkoutResults, 'DistanceMeters')
+            el_distance.text = str(self.hi_activity.JSON_totalDistance)
 
             # *** Creator
             # TODO: verify if information is available in JSON file
@@ -1619,7 +1681,10 @@ class TcxActivity:
     def _generate_walk_run_cycle_xml_data(self, el_activity):
         # **** Lap (a lap in the TCX XML corresponds to a segment in the HiActivity)
         for n, segment in enumerate(self.hi_activity.get_segments()):
-            el_lap = self._generate_lap_header_xml_data(el_activity, segment)
+            if not args.use_JSON_data :
+                el_lap = self._generate_lap_header_xml_data(el_activity, segment)
+            else:
+                el_lap = self._generate_lap_header_xml_JSON_data(el_activity, segment)
 
             # ***** Track
             el_track = xml_et.SubElement(el_lap, 'Track')
@@ -1651,8 +1716,9 @@ class TcxActivity:
                         el_altitude_meters.text = str(last_altitude)
 
                     if 'distance' in data:
-                        el_distance_meters = xml_et.SubElement(el_trackpoint, 'DistanceMeters')
-                        el_distance_meters.text = str(data['distance'])
+                        if args.tcx_insert_distance_data :
+                            el_distance_meters = xml_et.SubElement(el_trackpoint, 'DistanceMeters')
+                            el_distance_meters.text = str(data['distance'])
 
                     if 'hr' in data:
                         el_heart_rate_bpm = xml_et.SubElement(el_trackpoint, 'HeartRateBpm')
@@ -1685,6 +1751,10 @@ class TcxActivity:
                 el_time.text = _get_tz_aware_datetime(segment['stop'], self.hi_activity.time_zone).isoformat('T')
                 el_distance_meters = xml_et.SubElement(el_trackpoint, 'DistanceMeters')
                 el_distance_meters.text = str(segment['distance'])
+
+            if args.use_JSON_data :
+                el_ext = self._generate_lap_header_ext_xml_JSON_data(el_activity, segment, el_lap)
+
 
     def _generate_swim_xml_data(self, el_activity):
         """ Generates the TCX XML content for swimming activities """
@@ -1767,6 +1837,56 @@ class TcxActivity:
         el_intensity.text = 'Active'
         el_trigger_method = xml_et.SubElement(el_lap, 'TriggerMethod')  # TODO verify if required/correct
         el_trigger_method.text = 'Manual'
+
+        return el_lap
+
+    def _generate_lap_header_xml_JSON_data(self, el_activity, segment) -> xml_et.Element:
+        """ Generates the TCX XML lap header content part """
+        """ dan67 - generate lap header from JSON data, without recalcutalion """
+        el_lap = xml_et.SubElement(el_activity, 'Lap')
+        el_lap.set('StartTime', _get_tz_aware_datetime(segment['start'], self.hi_activity.time_zone).isoformat('T'))
+
+        el_totaltimeseconds = xml_et.SubElement(el_lap, 'TotalTimeSeconds')
+        el_totaltimeseconds.text = str(self.hi_activity.JSON_totalTime)
+        el_distancemeters = xml_et.SubElement(el_lap, 'DistanceMeters')
+        el_distancemeters.text = str(self.hi_activity.JSON_totalDistance)
+        if self.hi_activity.JSON_bestPace != 0:
+            el_maximumspeed = xml_et.SubElement(el_lap, 'MaximumSpeed')
+            el_maximumspeed.text = str(round(3600 / self.hi_activity.JSON_bestPace, 2))
+        el_calories = xml_et.SubElement(el_lap, 'Calories')
+        el_calories.text = str(self.hi_activity.JSON_totalCalories)
+
+        el_average_heart_rate = xml_et.SubElement(el_lap, 'AverageHeartRateBpm')
+        el_average_heart_rate.set('xsi:type', 'HeartRateInBeatsPerMinute_t')
+        value = xml_et.SubElement(el_average_heart_rate, 'Value')
+        value.text = str(self.hi_activity.JSON_avgHeartRate)
+
+        el_max_heart_rate = xml_et.SubElement(el_lap, 'MaximumHeartRateBpm')
+        el_max_heart_rate.set('xsi:type', 'HeartRateInBeatsPerMinute_t')
+        value = xml_et.SubElement(el_max_heart_rate, 'Value')
+        value.text = str(self.hi_activity.JSON_maxHeartRate)
+
+        el_intensity = xml_et.SubElement(el_lap, 'Intensity')  # TODO verify if required/correct
+        el_intensity.text = 'Active'
+        el_trigger_method = xml_et.SubElement(el_lap, 'TriggerMethod')  # TODO verify if required/correct
+        el_trigger_method.text = 'Manual'
+
+        return el_lap
+
+    def _generate_lap_header_ext_xml_JSON_data(self, el_activity, segment, el_lap) -> xml_et.Element:
+        el_extensions = xml_et.SubElement(el_lap, 'Extensions')
+        el_tpx = xml_et.SubElement(el_extensions, 'TPX')
+        el_tpx.set('xmlns', 'http://www.garmin.com/xmlschemas/ActivityExtension/v2')
+
+        if self.hi_activity.JSON_avgPace != 0:
+            el_average_speed = xml_et.SubElement(el_tpx, 'AvgSpeed')
+            el_average_speed.text = str(round(3600 / self.hi_activity.JSON_avgPace, 2))
+        el_average_cadence = xml_et.SubElement(el_tpx, 'AvgRunCadence')
+        el_average_cadence.text = str(self.hi_activity.JSON_avgCadence)
+        el_max_cadence = xml_et.SubElement(el_tpx, 'MaxRunCadence')
+        el_max_cadence.text = str(self.hi_activity.JSON_bestCadence)
+        el_steps = xml_et.SubElement(el_tpx, 'Steps')
+        el_steps.text = str(self.hi_activity.JSON_totalSteps)
 
         return el_lap
 
@@ -1956,7 +2076,7 @@ def _init_argument_parser() -> argparse.ArgumentParser:
                                                    --json argument to e.g. run the conversion again for the JSON \
                                                    activity or for debugging purposes.',
                             action='store_true')
-    json_group.add_argument('--json_summary', help='Use data from JSON file, without recalculation',
+    json_group.add_argument('--json_summary', help='Export data from JSON file as summary',
                             action='store_true')
 
     file_group = parser.add_argument_group('FILE options')
@@ -2009,6 +2129,17 @@ def _init_argument_parser() -> argparse.ArgumentParser:
                            help='When an activity has altitude information, inserts the last known altitude in \
                               every track point of the generated TCX file.',
                            action='store_true')
+    # dan67
+    tcx_group.add_argument('--tcx_insert_distance_data',
+                           help='Calculate distance in segment data and in the generated TCX file.',
+                           action='store_true')
+    tcx_group.add_argument('--use_JSON_data',
+                           help='Use data from JSON in the generated TCX file, if available. \
+                                Argument "--no_pause" is set to True.',
+                           action='store_true')
+    tcx_group.add_argument('--no_pause', help='Disable pause in TCX file.',
+                           action='store_true')
+
 
     output_group = parser.add_argument_group('OUTPUT options')
     output_group.add_argument('--output_dir', help='The path to the directory to store the output files. The default \
@@ -2030,6 +2161,7 @@ def _init_argument_parser() -> argparse.ArgumentParser:
     output_group.add_argument('--validate_xml', help='Validate generated TCX XML file(s). NOTE: requires xmlschema library \
                                                 and an internet connection to retrieve the TCX XSD.',
                               action='store_true')
+
     parser.add_argument('--log_level', help='Set the logging level.', type=str, choices=['INFO', 'DEBUG'],
                         default='INFO')
 
@@ -2038,6 +2170,8 @@ def _init_argument_parser() -> argparse.ArgumentParser:
 
 def main():
     parser = _init_argument_parser()
+    # dan67 - set args as global variable (maybe is better than send as argument?)
+    global args
     args = parser.parse_args()
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -2069,6 +2203,14 @@ def main():
         output_file_suffix_format = '_%03d'
     else:
         output_file_suffix_format = '%.0s'
+
+    # dan67
+    # set arguments for use JSON data
+    if not args.json and args.use_JSON_data:
+        args.use_JSON_data = False
+
+    if args.use_JSON_data:
+        args.no_pause = True
 
     if args.file:
         if args.sport:
