@@ -1726,18 +1726,24 @@ class TcxActivity:
                         value = xml_et.SubElement(el_heart_rate_bpm, 'Value')
                         value.text = str(data['hr'])
 
-                    if 's-r' in data:  # Step frequency (for walking and running)
-                        if self.hi_activity.get_activity_type() in (HiActivity.TYPE_WALK, HiActivity.TYPE_RUN,
+                    if 'rs' or 's-r' in data:
+                        el_extensions = xml_et.SubElement(el_trackpoint, 'Extensions')
+                        el_tpx = xml_et.SubElement(el_extensions, 'TPX')
+                        el_tpx.set('xmlns', 'http://www.garmin.com/xmlschemas/ActivityExtension/v2')
+
+                        if 'rs' in data:
+                            el_speed = xml_et.SubElement(el_tpx, 'Speed')
+                            el_speed.text = str(int(data['rs'])*0.1)
+
+                        if 's-r' in data:  # Step frequency (for walking and running)
+                            if self.hi_activity.get_activity_type() in (HiActivity.TYPE_WALK, HiActivity.TYPE_RUN,
                                                                     HiActivity.TYPE_HIKE, HiActivity.TYPE_MOUNTAIN_HIKE,
                                                                     HiActivity.TYPE_CROSS_COUNTRY_RUN):
-                            el_extensions = xml_et.SubElement(el_trackpoint, 'Extensions')
-                            el_tpx = xml_et.SubElement(el_extensions, 'TPX')
-                            el_tpx.set('xmlns', 'http://www.garmin.com/xmlschemas/ActivityExtension/v2')
-                            el_run_cadence = xml_et.SubElement(el_tpx, 'RunCadence')
-                            # [Verified] Strava / TCX expects strides/minute (Strava displays steps/minute
-                            # in activity overview). The HiTrack information is in steps/minute. Divide by 2 to have
-                            # strides/minute in TCX.
-                            el_run_cadence.text = str(int(data['s-r'] / 2))
+                                el_run_cadence = xml_et.SubElement(el_tpx, 'RunCadence')
+                                # [Verified] Strava / TCX expects strides/minute (Strava displays steps/minute
+                                # in activity overview). The HiTrack information is in steps/minute. Divide by 2 to have
+                                # strides/minute in TCX.
+                                el_run_cadence.text = str(int(data['s-r'] / 2))
             else:
                 # No detailed segment data. Create two (dummy) trackpoints at start and stop time of segment.
                 el_trackpoint = xml_et.SubElement(el_track, 'Trackpoint')
